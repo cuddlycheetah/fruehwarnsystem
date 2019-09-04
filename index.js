@@ -1,16 +1,29 @@
-const Settings = require('./Settings')
-const ownerId = Settings.get('ownerId', 0)
-const cellSize = Settings.get('cellSize', 5) // km
-
-const home = Settings.get('homePos', {
-    latitude: 48.5335544,
-    longitude: 10.1278816,
-})
-
 const WebSocket = require('ws')
-const { Client } = require('@simonschick/blitzortungapi')
+const { Client: BlitzortungClient } = require('@simonschick/blitzortungapi')
 const TelegramBot = require('node-telegram-bot-api')
 const Push = require('pushover-notifications')
+const express = require('express')
+const Settings = require('./Settings')
+const SR_STATE = {
+    NEW_CELL: 0,
+    NEW_STRIKE: 0,
+}
+
+
+
+
+
+
+const home = {
+    latitude: 37.563,
+    longitude: 18.012,
+}
+/*Settings.get('homePos', {
+    latitude: 48.5335544,
+    longitude: 10.1278816,
+})*/
+const { sequelize, LightningEvent, LightningCell } = require('./database')
+const app = express()
 
 const pushoverSettings = Settings.get('pushoverSettings', {
     user: '',
@@ -22,25 +35,15 @@ var pusher = Settings.get('pushoverEnabled', false)
     : false
 
 const bot = new TelegramBot(Settings.get('botToken', ''), { polling: false })
+/*interface NotificationService {
+    public onStartup();
+    public onError(error);
+    public onCell(cell);
+    public onStrike(strike);
+}*/
 
-function degToRad(deg) {
-    return deg / 180 * Math.PI;
-}
-function sphericalDistance(pos1, pos2, radius) {
+function sphericalDistance(pos1, pos2) {
     return getDistanceFromLatLonInKm(pos1.latitude, pos1.longitude, pos2.latitude, pos2.longitude)
-
-
-    const φ1 = degToRad(pos1.latitude);
-    const φ2 = degToRad(pos2.latitude);
-    const Δφ2 = degToRad(pos2.latitude - pos1.latitude) / 2;
-    const Δλ2 = degToRad(pos2.longitude - pos1.latitude) / 2;
-
-    const a = Math.sin(Δφ2) * Math.sin(Δφ2) +
-            Math.cos(φ1) * Math.cos(φ2) *
-            Math.sin(Δλ2) * Math.sin(Δλ2);
-    const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-
-    return radius * c;
 }
 function getDistanceFromLatLonInKm(lat1, lon1, lat2, lon2) {
     var deg2Rad = deg => {
@@ -59,12 +62,9 @@ function getDistanceFromLatLonInKm(lat1, lon1, lat2, lon2) {
     return d;
 }
 
-var zellenCache = {}
-
-
 // live.lightningmaps.org/
 // ws8.blitzortung.org:8055
-const client = new Client({
+const client = new BlitzortungClient({
     make: () => new WebSocket('ws://ws1.blitzortung.org:8055/')
 })
 
@@ -86,51 +86,62 @@ client.on('connect', () => {
         })
     }
 })
-function cellCalc(lat, lng) {
-    let key = `${lat}#${lng}`
-    const pos = {
-        latitude: lat,
-        longitude: lng,
-    }
-    let cellIncreased = false
 
-    let zellenCacheKeys = Object.keys(zellenCache)
-    for (let i=0;i < zellenCacheKeys.length; i++) {
-        let iKey = zellenCacheKeys[ i ]
-        let iLat = parseFloat(iKey.split('#')[0])
-        let iLng = parseFloat(iKey.split('#')[1])
-        let iPos = { latitude: iLat, longitude: iLng }
-        let iDist = Math.round(sphericalDistance(pos, iPos, 6371), 2)
-        if (iDist <= cellSize) {
-            cellIncreased = true
-            key = iKey
-            break
+const newStrike = async ({location, deviation, delay, time}) => {
+    let result = {
+        state: SR_STATE.NEW_STRIKE,   
+    }
+    const cells = await LightningCell.findAll()
+    const nearbyCells = cells.filter((cell) => {
+        const cellPos = { latitude: cell.lat, longitude: cell.lng, }
+        const dist = Math.round(sphericalDistance(location, cellPos), 3)
+        return dist <= Settings.get('cellSize', 5)
+    })
+    let inCell = nearbyCells.length > 0
+        ? nearbyCells[0]
+        : false
+    if (!inCell) {
+        inCell = await LightningCell.create({
+            lat: location.latitude,
+            lng: location.longitude,
+            time: new Date(time),
+        })
+        result = {
+            state: SR_STATE.NEW_CELL,
+            cellId: inCell.id,
         }
     }
+    inCell.lcCount++
+    await inCell.save()
 
-    zellenCache[ key ] = cellIncreased ? (zellenCache[ key ] + 1) : 1
+    await LightningCell.create({
+        cellId: inCell.id,
+        deviation: deviation,
+        delay: delay,
+        lat: location.latitude,
+        lng: location.longitude,
+        time: new Date(time),
+    })
 
-    console.log(Object.values(zellenCache).join(' '))
-    return {
-        cellIncreased: cellIncreased,
-        cellKey: key,
-    }
+    return result
 }
 
 client.on('data', async strike => {
-    let dist = Math.round(sphericalDistance(home, strike.location, 6371))
+    let dist = Math.round(sphericalDistance(home, strike.location))
+    if (dist <= Settings.get('zoneSize', 20)) {
+        console.log(strike)
+        let state = newStrike(strike)
 
-    if (dist <= 20) {
-        let { cellIncreased, cellKey } = cellCalc(strike.location.latitude, strike.location.longitude)
+        //let { cellIncreased, cellKey } = cellCalc(strike.location.latitude, strike.location.longitude)
 
-        console.log({
+        /*console.log({
             cellKey: cellKey,
             cellIncreased: cellIncreased,
             ...strike.location,
             distance: dist+'km'
-        })
-        
-        if (!cellIncreased) {
+        })*/
+        const ownerId = Settings.get('ownerId', 0)
+        /*if (!cellIncreased) {
             if (!!pusher) {
                 await pusher.send({
                     title: "Frühwarnsystem",
@@ -145,7 +156,7 @@ client.on('data', async strike => {
         } else {
             await bot.sendLocation(ownerId, strike.location.latitude, strike.location.longitude, {disable_notification:true})
             await bot.sendMessage(ownerId, `<pre>Zellenaktivität ${dist}km\n${strike.delay} Sekunden</pre>`, {parse_mode: 'HTML'})
-        }
+        }*/
     } else {
         //console.info(dist+'km')
     }
@@ -165,6 +176,13 @@ client.on('error', () => {
             priority: 1,
         })
     }
-    setTimeout(() => client.connect(), 1000 * 10)
+    setTimeout(() => client.connect(), 1000 * 5)
 })
-client.connect()
+
+LightningCell.sync()
+.then(LightningEvent.sync())
+.then(client.connect())
+
+app.listen(3000, function () {
+    console.log('listening on port 3000!');
+})

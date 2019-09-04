@@ -10,12 +10,15 @@
   "license": "ISC",
   "dependencies": {
     "@simonschick/blitzortungapi": "^1.0.3",
-    "express": "^4.17.0",
+    "body-parser": "^1.19.0",
+    "every": "0.0.1",
+    "express": "^4.17.1",
     "node-telegram-bot-api": "^0.30.0",
     "pushbullet": "^2.4.0",
     "pushover-notifications": "^1.2.0",
     "retry": "^0.12.0",
-    "sequelize": "^5.16.0",
+    "sequelize": "^5.18.1",
+    "socket.io": "^2.2.0",
     "sqlite3": "^4.1.0"
   }
 }
