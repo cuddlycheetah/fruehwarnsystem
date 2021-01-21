@@ -18,7 +18,7 @@
     "pushover-notifications": "^1.2.0",
     "retry": "^0.12.0",
     "sequelize": "^5.18.1",
-    "socket.io": "^2.2.0",
+    "socket.io": "^2.4.0",
     "sqlite3": "^4.1.0"
   }
 }
